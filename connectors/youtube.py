@@ -18,6 +18,55 @@ except ImportError as exc:  # noqa: F401
     ) from exc
 
 
+def _build_service(settings):
+    auth_mode = (settings.youtube_auth_mode or "api_key").lower()
+
+    if auth_mode == "oauth":
+        return _build_oauth_service(settings)
+
+    if not settings.youtube_api_key:
+        raise SystemExit("YOUTUBE_API_KEY is required for the YouTube connector.")
+    return build("youtube", "v3", developerKey=settings.youtube_api_key)
+
+
+def _build_oauth_service(settings):
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+    except ImportError as exc:  # noqa: F401
+        raise SystemExit(
+            "google-auth-oauthlib is required for YouTube OAuth. "
+            "Install it via requirements.txt."
+        ) from exc
+
+    token_path = Path(settings.youtube_oauth_token_file)
+    creds = None
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(
+            str(token_path), settings.youtube_oauth_scopes
+        )
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            secret_path = Path(settings.youtube_client_secret_file)
+            if not secret_path.exists():
+                raise SystemExit(
+                    f"YouTube OAuth requires {secret_path}. Download an OAuth client "
+                    "ID (Desktop app) from Google Cloud Console and save it there."
+                )
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(secret_path), settings.youtube_oauth_scopes
+            )
+            creds = flow.run_local_server(port=0)
+        token_path.write_text(creds.to_json(), encoding="utf-8")
+        print(f"[youtube] OAuth token cached at {token_path}")
+
+    return build("youtube", "v3", credentials=creds)
+
+
 def _resolve_live_chat_id(youtube, settings) -> str:
     if settings.youtube_live_chat_id:
         return settings.youtube_live_chat_id
@@ -39,6 +88,23 @@ def _resolve_live_chat_id(youtube, settings) -> str:
     return chat_id
 
 
+def _post_reply(youtube, chat_id: str, text: str) -> None:
+    try:
+        youtube.liveChatMessages().insert(
+            part="snippet",
+            body={
+                "snippet": {
+                    "liveChatId": chat_id,
+                    "type": "textMessageEvent",
+                    "textMessageDetails": {"messageText": text},
+                }
+            },
+        ).execute()
+        print(f"[youtube] Posted reply to chat: {text[:60]!r}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[youtube] Failed to post reply: {exc}")
+
+
 def _poll(chat_id: str, youtube, settings) -> None:
     page_token: str | None = None
     seen: set[str] = set()
@@ -46,6 +112,7 @@ def _poll(chat_id: str, youtube, settings) -> None:
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    post_replies = settings.youtube_post_replies
 
     while True:
         resp = (
@@ -65,7 +132,9 @@ def _poll(chat_id: str, youtube, settings) -> None:
             )
             if not text:
                 continue
-            loop.run_until_complete(process_chat(author, text))
+            reply = loop.run_until_complete(process_chat(author, text))
+            if post_replies and reply:
+                _post_reply(youtube, chat_id, reply)
 
         page_token = resp.get("nextPageToken")
         interval_ms = resp.get("pollingIntervalMillis", int(settings.youtube_poll_seconds * 1000))
@@ -74,11 +143,13 @@ def _poll(chat_id: str, youtube, settings) -> None:
 
 def main() -> None:
     settings = get_settings()
-    if not settings.youtube_api_key:
-        raise SystemExit("YOUTUBE_API_KEY is required for the YouTube connector.")
-    youtube = build("youtube", "v3", developerKey=settings.youtube_api_key)
+    youtube = _build_service(settings)
     chat_id = _resolve_live_chat_id(youtube, settings)
-    print(f"[youtube] Polling live chat {chat_id} ...")
+    auth_mode = (settings.youtube_auth_mode or "api_key").lower()
+    print(
+        f"[youtube] Polling live chat {chat_id} (auth={auth_mode}, "
+        f"post_replies={settings.youtube_post_replies}) ..."
+    )
     _poll(chat_id, youtube, settings)
 
 

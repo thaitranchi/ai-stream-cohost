@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.config import get_settings
 from app.routes import router
+from app.ui_routes import router as ui_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Stream Co-Host", version="0.1.0", lifespan=lifespan)
 app.include_router(router)
+app.include_router(ui_router)
 
 
 @app.get("/health")

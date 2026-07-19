@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     youtube_live_chat_id: str = ""
     youtube_poll_seconds: float = 5.0
 
+    # YouTube auth: "api_key" (read-only) or "oauth" (user-authenticated, can post)
+    youtube_auth_mode: str = "api_key"
+    youtube_client_secret_file: str = "client_secret.json"
+    youtube_oauth_token_file: str = "token.json"
+    youtube_oauth_scopes: list[str] = [
+        "https://www.googleapis.com/auth/youtube.readonly"
+    ]
+    # When True and OAuth has write scope, the co-host reply is posted to live chat.
+    youtube_post_replies: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

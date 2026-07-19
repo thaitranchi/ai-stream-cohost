@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 
-import pygame
-
 from app.config import get_settings
 
 _initialized = False
@@ -13,6 +11,8 @@ _initialized = False
 def _ensure_init() -> None:
     global _initialized
     if not _initialized:
+        import pygame
+
         pygame.mixer.init()
         _initialized = True
 

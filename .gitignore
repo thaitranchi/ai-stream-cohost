@@ -151,6 +151,10 @@ activemq-data/
 .env
 .envrc
 .venv
+
+# YouTube OAuth credentials (keep secret)
+token.json
+client_secret.json
 env/
 venv/
 ENV/

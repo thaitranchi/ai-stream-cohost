@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Co-Host Control</title>
+<style>
+  :root { --bg:#0b0e14; --panel:#141925; --fg:#e6e6e6; --bot:#4fd1c5; --trig:#ffd166;
+    --dim:#7a8290; --accent:#4fd1c5; --danger:#ef5350; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font-family:"Segoe UI", system-ui, sans-serif; padding:16px; }
+  h1 { font-size:18px; margin:0 0 12px; }
+  h2 { font-size:14px; color:var(--dim); text-transform:uppercase; letter-spacing:.05em;
+    margin:18px 0 8px; border-bottom:1px solid #222; padding-bottom:4px; }
+  .card { background:var(--panel); border-radius:10px; padding:14px; margin-bottom:14px; }
+  label { display:block; font-size:12px; color:var(--dim); margin:8px 0 4px; }
+  input, textarea, select { width:100%; background:#0d111a; color:var(--fg);
+    border:1px solid #2a3140; border-radius:6px; padding:8px; font-size:14px; font-family:inherit; }
+  textarea { resize:vertical; min-height:70px; }
+  .row { display:flex; gap:10px; }
+  .row > div { flex:1; }
+  button { cursor:pointer; border:none; border-radius:6px; padding:9px 14px; font-size:14px;
+    font-weight:600; color:#06231f; background:var(--accent); }
+  button.secondary { background:#2a3140; color:var(--fg); }
+  button.danger { background:var(--danger); color:#fff; }
+  .status-line { font-size:12px; color:var(--bot); min-height:16px; margin-top:8px; }
+  #feed { max-height:260px; overflow-y:auto; display:flex; flex-direction:column; gap:6px; }
+  .msg { background:rgba(255,255,255,.04); border-radius:6px; padding:5px 9px; }
+  .msg .who { font-size:11px; color:var(--dim); }
+  .msg .text { font-size:13px; }
+  .msg.triggered { border-left:3px solid var(--trig); }
+  .reply { background:rgba(79,209,197,.10); border-left:3px solid var(--bot); border-radius:6px; padding:5px 9px; }
+  .reply .who { font-size:11px; color:var(--bot); }
+  .reply .text { font-size:13px; }
+  .test-input { display:flex; gap:8px; margin-top:8px; }
+  .test-input input { flex:1; }
+</style>
+</head>
+<body>
+<h1>🎙️ AI Stream Co-Host — Control</h1>
+
+<div class="card">
+  <h2>Live Feed</h2>
+  <div id="feed"></div>
+  <div class="test-input">
+    <input id="test-user" value="TestViewer" style="max-width:120px" />
+    <input id="test-msg" placeholder="Type a test message (e.g. @Bot why so bad?)" />
+    <button id="test-btn">Send</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Persona &amp; Triggers</h2>
+  <label>Persona prompt</label>
+  <textarea id="persona_prompt"></textarea>
+  <label>Trigger words (comma-separated)</label>
+  <input id="trigger_words" />
+</div>
+
+<div class="card">
+  <h2>Speech &amp; Model</h2>
+  <div class="row">
+    <div>
+      <label>TTS provider</label>
+      <select id="tts_provider"><option value="gtts">gtts</option><option value="mock">mock</option></select>
+    </div>
+    <div>
+      <label>TTS language</label>
+      <input id="tts_lang" />
+    </div>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <div>
+      <label>LLM provider</label>
+      <select id="llm_provider"><option value="openai">openai</option><option value="openrouter">openrouter</option></select>
+    </div>
+    <div>
+      <label>Model</label>
+      <input id="openai_model" />
+    </div>
+  </div>
+  <div id="model-note" style="font-size:11px;color:var(--dim);margin-top:6px"></div>
+  <button id="save-btn" style="margin-top:12px">Save settings</button>
+  <div class="status-line" id="save-status"></div>
+</div>
+
+<div class="card">
+  <h2>Server</h2>
+  <button class="danger" id="stop-btn">Stop server &amp; close</button>
+  <div class="status-line" id="stop-status"></div>
+</div>
+
+<script>
+const feed = document.getElementById("feed");
+function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, c => (
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function addMessage(e){
+  const d = document.createElement("div");
+  if (!e.reply){ d.className="msg"+(e.triggered?" triggered":""); d.innerHTML=`<div class="who">${escapeHtml(e.user)}</div><div class="text">${escapeHtml(e.message)}</div>`; }
+  else { d.className="reply"; d.innerHTML=`<div class="who">Co-Host → ${escapeHtml(e.user)}</div><div class="text">${escapeHtml(e.reply)}</div>`; }
+  feed.appendChild(d); feed.scrollTop = feed.scrollHeight;
+}
+
+async function loadState(){
+  const r = await fetch("/api/state"); const s = await r.json();
+  document.getElementById("persona_prompt").value = s.persona_prompt || "";
+  document.getElementById("trigger_words").value = (s.trigger_words||[]).join(", ");
+  document.getElementById("tts_provider").value = s.tts_provider;
+  document.getElementById("tts_lang").value = s.tts_lang;
+  document.getElementById("llm_provider").value = s.llm_provider;
+  document.getElementById("openai_model").value = s.llm_provider==="openrouter" ? s.openrouter_model : s.openai_model;
+}
+function syncModelLabel(){
+  const p = document.getElementById("llm_provider").value;
+  document.getElementById("model-note").textContent = p==="openrouter"
+    ? "Editing the OpenRouter model id (no API key shown here)."
+    : "Editing the OpenAI model id (no API key shown here).";
+  document.getElementById("openai_model").value = ""; // prompt user to (re)enter
+}
+document.getElementById("llm_provider").addEventListener("change", syncModelLabel);
+
+document.getElementById("save-btn").addEventListener("click", async () => {
+  const p = document.getElementById("llm_provider").value;
+  const body = {
+    persona_prompt: document.getElementById("persona_prompt").value,
+    trigger_words: document.getElementById("trigger_words").value.split(",").map(x=>x.trim()).filter(Boolean),
+    tts_provider: document.getElementById("tts_provider").value,
+    tts_lang: document.getElementById("tts_lang").value,
+    llm_provider: p,
+  };
+  body[p==="openrouter"?"openrouter_model":"openai_model"] = document.getElementById("openai_model").value;
+  const st = document.getElementById("save-status");
+  try {
+    const r = await fetch("/api/config", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    if (r.ok){ st.style.color="var(--bot)"; st.textContent="Saved ✓ changes apply live."; await loadState(); }
+    else { st.style.color="var(--danger)"; st.textContent="Save failed."; }
+  } catch(e){ st.style.color="var(--danger)"; st.textContent="Save error: "+e; }
+});
+
+document.getElementById("test-btn").addEventListener("click", async () => {
+  const user = document.getElementById("test-user").value || "TestViewer";
+  const message = document.getElementById("test-msg").value;
+  if(!message) return;
+  await fetch("/stream-chat", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({user, message})});
+  document.getElementById("test-msg").value="";
+});
+
+document.getElementById("stop-btn").addEventListener("click", async () => {
+  const st = document.getElementById("stop-status");
+  st.textContent = "Stopping server…";
+  try {
+    await fetch("/api/shutdown", {method:"POST"});
+    setTimeout(() => window.close(), 600);
+  } catch(e){ st.textContent = "Stop signal sent."; }
+});
+
+const es = new EventSource("/api/events");
+es.onmessage = (ev) => { try { addMessage(JSON.parse(ev.data)); } catch(e){} };
+
+loadState(); syncModelLabel();
+</script>
+</body>
+</html>

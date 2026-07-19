@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Co-Host Overlay</title>
+<style>
+  :root { --bg:#0b0e14; --fg:#e6e6e6; --bot:#4fd1c5; --trig:#ffd166; --dim:#7a8290; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif; overflow:hidden; }
+  #status { position:fixed; top:0; left:0; right:0; display:flex; gap:12px; flex-wrap:wrap;
+    padding:6px 12px; font-size:12px; color:var(--dim); background:rgba(0,0,0,.35); }
+  #status b { color:var(--fg); font-weight:600; }
+  #feed { position:absolute; top:30px; bottom:0; left:0; right:0; overflow-y:auto;
+    padding:10px 14px; display:flex; flex-direction:column; gap:8px; }
+  .msg { background:rgba(255,255,255,.04); border-radius:8px; padding:6px 10px; max-width:90%; }
+  .msg .who { font-size:12px; color:var(--dim); }
+  .msg.triggered { border-left:3px solid var(--trig); }
+  .msg .text { font-size:15px; }
+  .reply { align-self:flex-end; background:rgba(79,209,197,.10); border-left:3px solid var(--bot);
+    border-radius:8px; padding:6px 10px; max-width:90%; }
+  .reply .who { font-size:12px; color:var(--bot); }
+  .reply .text { font-size:15px; }
+  #feed::-webkit-scrollbar { width:6px; }
+  #feed::-webkit-scrollbar-thumb { background:var(--dim); border-radius:3px; }
+</style>
+</head>
+<body>
+<div id="status">
+  <span>Model: <b id="st-model">…</b></span>
+  <span>TTS: <b id="st-tts">…</b></span>
+  <span>Triggers: <b id="st-trig">…</b></span>
+  <span>Status: <b id="st-health">…</b></span>
+</div>
+<div id="feed"></div>
+
+<script>
+const feed = document.getElementById("feed");
+
+function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, c => (
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+function addMessage(e){
+  if (!e.reply){
+    const d = document.createElement("div");
+    d.className = "msg" + (e.triggered ? " triggered" : "");
+    d.innerHTML = `<div class="who">${escapeHtml(e.user)}</div>` +
+                  `<div class="text">${escapeHtml(e.message)}</div>`;
+    feed.appendChild(d);
+  } else {
+    const d = document.createElement("div");
+    d.className = "reply";
+    d.innerHTML = `<div class="who">Co-Host → ${escapeHtml(e.user)}</div>` +
+                  `<div class="text">${escapeHtml(e.reply)}</div>`;
+    feed.appendChild(d);
+  }
+  feed.scrollTop = feed.scrollHeight;
+}
+
+async function loadState(){
+  try {
+    const r = await fetch("/api/state");
+    const s = await r.json();
+    document.getElementById("st-model").textContent = s.llm_provider + "/" + (s.llm_provider==="openrouter"?s.openrouter_model:s.openai_model);
+    document.getElementById("st-tts").textContent = s.tts_provider + " (" + s.tts_lang + ")";
+    document.getElementById("st-trig").textContent = (s.trigger_words||[]).join(", ");
+    document.getElementById("st-health").textContent = "live";
+  } catch(e){ document.getElementById("st-health").textContent = "offline"; }
+}
+
+const es = new EventSource("/api/events");
+es.onmessage = (ev) => { try { addMessage(JSON.parse(ev.data)); } catch(e){} };
+es.onerror = () => { document.getElementById("st-health").textContent = "reconnecting"; };
+
+loadState();
+setInterval(loadState, 15000);
+</script>
+</body>
+</html>
