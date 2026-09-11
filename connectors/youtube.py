@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-import os
+import asyncio
+import logging
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from app.config import get_settings  # noqa: E402
 from app.pipeline import process_chat  # noqa: E402
+
+logger = logging.getLogger("cohost.youtube")
+
+_MAX_POLL_ERRORS = 10
+_BACKOFF_BASE_S = 2.0
+_BACKOFF_MAX_S = 120.0
 
 try:
     from googleapiclient.discovery import build
@@ -62,7 +70,7 @@ def _build_oauth_service(settings):
             )
             creds = flow.run_local_server(port=0)
         token_path.write_text(creds.to_json(), encoding="utf-8")
-        print(f"[youtube] OAuth token cached at {token_path}")
+        logger.info("OAuth token cached at %s", token_path)
 
     return build("youtube", "v3", credentials=creds)
 
@@ -100,55 +108,86 @@ def _post_reply(youtube, chat_id: str, text: str) -> None:
                 }
             },
         ).execute()
-        print(f"[youtube] Posted reply to chat: {text[:60]!r}")
+        logger.info("Posted reply to chat: %s", text[:60])
     except Exception as exc:  # noqa: BLE001
-        print(f"[youtube] Failed to post reply: {exc}")
+        logger.warning("Failed to post reply: %s", exc)
 
 
 def _poll(chat_id: str, youtube, settings) -> None:
     page_token: str | None = None
     seen: set[str] = set()
-    import asyncio
-
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     post_replies = settings.youtube_post_replies
+    consecutive_errors = 0
 
     while True:
-        resp = (
-            youtube.liveChatMessages()
-            .list(liveChatId=chat_id, part="snippet,authorDetails", pageToken=page_token)
-            .execute()
-        )
-        for item in resp.get("items", []):
-            msg_id = item["id"]
-            if msg_id in seen:
-                continue
-            seen.add(msg_id)
-            snippet = item["snippet"]
-            author = item["authorDetails"]["displayName"]
-            text = snippet.get("displayMessage") or snippet.get("textMessageDetails", {}).get(
-                "messageText", ""
+        try:
+            resp = (
+                youtube.liveChatMessages()
+                .list(liveChatId=chat_id, part="snippet,authorDetails", pageToken=page_token)
+                .execute()
             )
-            if not text:
-                continue
-            reply = loop.run_until_complete(process_chat(author, text))
-            if post_replies and reply:
-                _post_reply(youtube, chat_id, reply)
+            consecutive_errors = 0
 
-        page_token = resp.get("nextPageToken")
-        interval_ms = resp.get("pollingIntervalMillis", int(settings.youtube_poll_seconds * 1000))
-        loop.run_until_complete(asyncio.sleep(interval_ms / 1000.0))
+            for item in resp.get("items", []):
+                msg_id = item["id"]
+                if msg_id in seen:
+                    continue
+                seen.add(msg_id)
+                snippet = item["snippet"]
+                author = item["authorDetails"]["displayName"]
+                text = snippet.get("displayMessage") or snippet.get(
+                    "textMessageDetails", {}
+                ).get("messageText", "")
+                if not text:
+                    continue
+                reply = loop.run_until_complete(process_chat(author, text))
+                if post_replies and reply:
+                    _post_reply(youtube, chat_id, reply)
+
+            page_token = resp.get("nextPageToken")
+            interval_ms = resp.get(
+                "pollingIntervalMillis", int(settings.youtube_poll_seconds * 1000)
+            )
+            loop.run_until_complete(asyncio.sleep(interval_ms / 1000.0))
+
+        except KeyboardInterrupt:
+            logger.info("YouTube connector shutting down")
+            break
+        except Exception as exc:
+            consecutive_errors += 1
+            if consecutive_errors > _MAX_POLL_ERRORS:
+                logger.error(
+                    "YouTube connector failed %d times consecutively, stopping",
+                    consecutive_errors,
+                )
+                break
+            delay = min(_BACKOFF_BASE_S ** consecutive_errors, _BACKOFF_MAX_S)
+            logger.warning(
+                "Poll error (%d/%d): %s — retrying in %.1fs",
+                consecutive_errors,
+                _MAX_POLL_ERRORS,
+                exc,
+                delay,
+            )
+            loop.run_until_complete(asyncio.sleep(delay))
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
     settings = get_settings()
     youtube = _build_service(settings)
     chat_id = _resolve_live_chat_id(youtube, settings)
     auth_mode = (settings.youtube_auth_mode or "api_key").lower()
-    print(
-        f"[youtube] Polling live chat {chat_id} (auth={auth_mode}, "
-        f"post_replies={settings.youtube_post_replies}) ..."
+    logger.info(
+        "Polling live chat %s (auth=%s, post_replies=%s)",
+        chat_id,
+        auth_mode,
+        settings.youtube_post_replies,
     )
     _poll(chat_id, youtube, settings)
 

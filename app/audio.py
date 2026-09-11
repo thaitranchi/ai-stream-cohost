@@ -33,6 +33,15 @@ async def play_audio(path: str) -> None:
             pass
         return
 
+    from app.config import get_settings
+
+    if get_settings().disable_audio:
+        try:
+            os.remove(path)
+        except OSError:  # noqa: BLE001
+            pass
+        return
+
     def _play() -> None:
         _ensure_init()
         try:

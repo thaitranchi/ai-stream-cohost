@@ -1,141 +1,74 @@
+"""Run everything: Rust engine + FastAPI + voice capture + YouTube chat."""
+
 from __future__ import annotations
 
-import os
-import shutil
+import argparse
+import logging
 import signal
 import subprocess
 import sys
 import time
-import webbrowser
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-ENV_PATH = ROOT / ".env"
-ENV_EXAMPLE = ROOT / ".env.example"
-
-HOST = "127.0.0.1"
-PORT = "8000"
-CONTROL_URL = f"http://{HOST}:{PORT}/control"
-HEALTH_URL = f"http://{HOST}:{PORT}/health"
-
-CHILDREN: list[subprocess.Popen] = []
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+)
+logger = logging.getLogger("cohost.main")
 
 
-def _ensure_env() -> None:
-    if not ENV_PATH.exists():
-        if ENV_EXAMPLE.exists():
-            shutil.copy(ENV_EXAMPLE, ENV_PATH)
-            print(f"[run] Created .env from .env.example at {ENV_PATH}")
-            print("[run] Edit .env to add your API keys, then re-run if needed.")
-        else:
-            print("[run] Warning: .env.example not found; continuing without .env.")
-
-
-def _should_run_youtube() -> bool:
-    if not ENV_PATH.exists():
-        return False
-    text = ENV_PATH.read_text(encoding="utf-8")
-    api_key = ""
-    auth_mode = "api_key"
-    secret = "client_secret.json"
-    for line in text.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#") or "=" not in s:
-            continue
-        k, v = s.split("=", 1)
-        k, v = k.strip().upper(), v.strip()
-        if k == "YOUTUBE_API_KEY":
-            api_key = v
-        elif k == "YOUTUBE_AUTH_MODE":
-            auth_mode = v.lower()
-        elif k == "YOUTUBE_CLIENT_SECRET_FILE":
-            secret = v
-    if api_key:
-        return True
-    if auth_mode == "oauth" and (ROOT / secret).exists():
-        return True
-    return False
-
-
-def _start_server() -> subprocess.Popen:
-    cmd = [sys.executable, "-m", "uvicorn", "cohost_bot:app",
-           "--host", HOST, "--port", PORT]
-    return subprocess.Popen(cmd, cwd=str(ROOT))
-
-
-def _start_youtube() -> subprocess.Popen:
-    return subprocess.Popen(
-        [sys.executable, "-m", "connectors.youtube"], cwd=str(ROOT)
-    )
-
-
-def _wait_for_server(timeout: float = 30.0) -> bool:
-    import urllib.request
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(HEALTH_URL, timeout=2) as r:
-                if r.status == 200:
-                    return True
-        except Exception:
-            time.sleep(0.5)
-    return False
-
-
-def _terminate_children() -> None:
-    for p in CHILDREN:
-        if p.poll() is None:
-            try:
-                if os.name == "nt":
-                    p.send_signal(signal.CTRL_C_EVENT)
-                else:
-                    p.terminate()
-            except Exception:
-                pass
-    for p in CHILDREN:
-        try:
-            p.wait(timeout=5)
-        except Exception:
-            try:
-                p.kill()
-            except Exception:
-                pass
+def start_rust_engine() -> subprocess.Popen | None:
+    logger.info("Starting Rust audio engine...")
+    try:
+        proc = subprocess.Popen(
+            ["cargo", "run", "--release"],
+            cwd="rust-engine",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(3)
+        if proc.poll() is not None:
+            logger.error("Rust engine exited early")
+            return None
+        logger.info("Rust engine running (pid=%d)", proc.pid)
+        return proc
+    except FileNotFoundError:
+        logger.warning("cargo not found — Rust engine disabled")
+        return None
 
 
 def main() -> None:
-    _ensure_env()
-    print("[run] Starting AI Stream Co-Host…")
+    parser = argparse.ArgumentParser(description="AI Stream Co-Host")
+    parser.add_argument("--no-voice", action="store_true", help="Disable mic capture")
+    parser.add_argument("--no-youtube", action="store_true", help="Disable YouTube chat")
+    parser.add_argument("--no-rust", action="store_true", help="Skip Rust engine startup")
+    args = parser.parse_args()
 
-    server = _start_server()
-    CHILDREN.append(server)
+    rust_proc = None
+    if not args.no_rust:
+        rust_proc = start_rust_engine()
 
-    if _should_run_youtube():
-        print("[run] YouTube connector enabled — starting.")
-        CHILDREN.append(_start_youtube())
-    else:
-        print("[run] YouTube connector disabled (no API key / OAuth secret).")
+    from app.unified_pipeline import UnifiedCoHost
 
-    if _wait_for_server():
-        print(f"[run] Server ready at {CONTROL_URL}")
-        try:
-            webbrowser.open(CONTROL_URL)
-        except Exception:
-            pass
-    else:
-        print("[run] Warning: server did not report healthy in time.")
+    cohost = UnifiedCoHost(
+        enable_voice=not args.no_voice,
+        enable_youtube=not args.no_youtube,
+    )
+
+    def shutdown(sig, frame):
+        logger.info("Shutting down...")
+        cohost.stop()
+        if rust_proc:
+            rust_proc.terminate()
+            rust_proc.wait(timeout=5)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
 
     try:
-        while True:
-            if server.poll() is not None:
-                print("[run] Server process exited; shutting down.")
-                break
-            time.sleep(1)
+        cohost.start()
     except KeyboardInterrupt:
-        print("\n[run] Interrupted by user.")
-    finally:
-        _terminate_children()
-        print("[run] Stopped.")
+        shutdown(None, None)
 
 
 if __name__ == "__main__":

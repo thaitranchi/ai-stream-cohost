@@ -1,0 +1,31 @@
+services:
+  rust-engine:
+    build:
+      context: .
+      dockerfile: rust-engine/Dockerfile
+    ports:
+      - "50051:50051"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "exec 3<>/dev/tcp/127.0.0.1/50051"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  python-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - RUST_ENGINE_HOST=rust-engine
+      - RUST_ENGINE_PORT=50051
+    depends_on:
+      rust-engine:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./.env:/app/.env:ro

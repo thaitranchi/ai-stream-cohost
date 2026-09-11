@@ -1,0 +1,29 @@
+# fly.toml — Fly.io deployment config for AI Stream Co-Host
+# Deploy: fly launch && fly secrets set OPENAI_API_KEY=xxx ...
+# Free tier: 3 shared-cpu-1x (256MB) VMs, 3GB outbound
+
+app = "ai-stream-cohost"
+
+[build]
+  dockerfile = "Dockerfile.cloud"
+
+[env]
+  PORT = "8000"
+  DISABLE_AUDIO = "true"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

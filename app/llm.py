@@ -6,6 +6,9 @@ from openai import AsyncOpenAI
 
 from app.config import get_settings
 
+_LLM_TIMEOUT_S = 30.0
+_LLM_MAX_RETRIES = 2
+
 
 def _build_messages(user: str, message: str, persona: str) -> list[dict[str, str]]:
     return [
@@ -27,10 +30,16 @@ def _build_client(settings):
         return AsyncOpenAI(
             api_key=settings.openrouter_api_key,
             base_url=settings.openrouter_base_url,
+            timeout=_LLM_TIMEOUT_S,
+            max_retries=_LLM_MAX_RETRIES,
         ), settings.openrouter_model
     if not settings.openai_api_key:
         return None
-    return AsyncOpenAI(api_key=settings.openai_api_key), settings.openai_model
+    return AsyncOpenAI(
+        api_key=settings.openai_api_key,
+        timeout=_LLM_TIMEOUT_S,
+        max_retries=_LLM_MAX_RETRIES,
+    ), settings.openai_model
 
 
 async def generate_reply(user: str, message: str) -> str:
@@ -52,6 +61,6 @@ async def generate_reply(user: str, message: str) -> str:
             temperature=0.9,
         )
         return resp.choices[0].message.content.strip()
-    except Exception as exc:  # noqa: BLE001 - degrade gracefully on API errors
+    except Exception as exc:
         await asyncio.sleep(0)
         return f"Ui, mình bị lỗi não một chút: {exc}"

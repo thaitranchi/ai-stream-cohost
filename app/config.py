@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     youtube_live_chat_id: str = ""
     youtube_poll_seconds: float = 5.0
 
+    # Cloud mode: disable audio playback (no audio device available)
+    disable_audio: bool = False
+
     # YouTube auth: "api_key" (read-only) or "oauth" (user-authenticated, can post)
     youtube_auth_mode: str = "api_key"
     youtube_client_secret_file: str = "client_secret.json"
